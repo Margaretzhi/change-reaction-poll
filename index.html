@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Live Polling | Reaction to Change</title>
+  
+  <!-- Embedded Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%232D4459'/><circle cx='50' cy='36' r='12' fill='%23FFFFFF'/><path d='M30 74 C30 54, 70 54, 70 74' fill='%23FFFFFF'/></svg>">
+
+  <!-- Production CDNs: QRCodes + Secure WebSocket MQTT (WSS compliant for GitHub Pages) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(140deg, #1C2B3A 0%, #2A3F54 50%, #3B5875 100%);
+      --card-bg: rgba(255, 255, 255, 0.96);
+      --text-dark: #121F2C;
+      --text-muted: #5E7488;
+      --text-white: #FFFFFF;
+      
+      --color-swimmer: #0A84FF;
+      --color-spotter: #FF9F0A;
+      --color-holder: #30D158;
+      
+      --radius-xl: 24px;
+      --radius-lg: 16px;
+      --radius-sm: 10px;
+      --shadow-card: 0 18px 40px rgba(8, 18, 30, 0.32);
+      --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: var(--font-family);
+      background: var(--bg-gradient);
+      min-height: 100vh;
+      color: var(--text-white);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 20px 48px;
+      overflow-x: hidden;
+    }
+
+    /* Common Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.22s ease;
+      text-decoration: none;
+    }
+
+    .btn-glass {
+      background: rgba(255, 255, 255, 0.16);
+      color: white;
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+    }
+    .btn-glass:hover {
+      background: rgba(255, 255, 255, 0.28);
+      transform: translateY(-1px);
+    }
+
+    /* ========================================================
+       1. PRESENTER DISPLAY VIEW (Projector / Stage Screen)
+       ======================================================== */
+    #presenterView {
+      width: 100%;
+      max-width: 1240px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .presenter-header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding: 0 4px;
+    }
+
+    .live-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.32);
+      padding: 8px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+
+    .pulse-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #34C759;
+      box-shadow: 0 0 10px #34C759;
+      animation: pulseAnim 2s infinite;
+    }
+
+    @keyframes pulseAnim {
+      0% { transform: scale(0.9); opacity: 0.8; }
+      50% { transform: scale(1.2); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.8; }
+    }
+
+    .hero-section {
+      text-align: center;
+      margin-bottom: 32px;
+      max-width: 920px;
+    }
+
+    .category-tag {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 2.2px;
+      color: #9FCBF2;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .poll-question {
+      font-size: clamp(26px, 3.6vw, 42px);
+      font-weight: 800;
+      line-height: 1.28;
+      letter-spacing: -0.6px;
+      text-shadow: 0 4px 18px rgba(0,0,0,0.3);
+    }
+
+    /* Grid Layout: 3 Archetypes + QR Side Panel */
+    .presenter-content {
+      display: grid;
+      grid-template-columns: 1fr 310px;
+      gap: 28px;
+      width: 100%;
+      align-items: stretch;
+    }
+
+    @media (max-width: 980px) {
+      .presenter-content {
+        grid-template-columns: 1fr;
+      }
+      .qr-panel {
+        order: -1;
+      }
+    }
+
+    /* Cards Grid */
+    .cards-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+    }
+
+    @media (max-width: 780px) {
+      .cards-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .archetype-card {
+      background: var(--card-bg);
+      color: var(--text-dark);
+      border-radius: var(--radius-xl);
+      padding: 30px 22px 24px;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      position: relative;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
+    }
+
+    .archetype-card.highlight-flash {
+      animation: cardFlash 0.75s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    @keyframes cardFlash {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.045); box-shadow: 0 0 0 6px rgba(10, 132, 255, 0.3), var(--shadow-card); }
+      100% { transform: scale(1); }
+    }
+
+    .avatar-bubble {
+      width: 146px;
+      height: 146px;
+      border-radius: 50%;
+      background: #DDE9F2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      box-shadow: inset 0 2px 6px rgba(0,0,0,0.06), 0 8px 20px rgba(25, 45, 70, 0.12);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .avatar-svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .archetype-title {
+      font-size: 21px;
+      font-weight: 700;
+      color: #152230;
+      margin-bottom: 8px;
+    }
+
+    .archetype-desc {
+      font-size: 13.5px;
+      color: var(--text-muted);
+      line-height: 1.45;
+      margin-bottom: 20px;
+      min-height: 48px;
+    }
+
+    .poll-stats {
+      width: 100%;
+      margin-top: auto;
+      padding-top: 16px;
+      border-top: 1px solid #EBF1F7;
+    }
+
+    .stats-numbers {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+
+    .stat-pct {
+      font-size: 32px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #101D2B;
+    }
+
+    .stat-count {
+      font-size: 13px;
+      font-weight: 600;
+      color: #72879B;
+    }
+
+    .stat-bar-bg {
+      width: 100%;
+      height: 12px;
+      background: #E8EFF5;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .stat-bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      transition: width 0.75s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .fill-swimmer { background: linear-gradient(90deg, #3FA2FF, var(--color-swimmer)); }
+    .fill-spotter { background: linear-gradient(90deg, #FFB947, var(--color-spotter)); }
+    .fill-holder { background: linear-gradient(90deg, #52E076, var(--color-holder)); }
+
+    /* QR Code Side Panel */
+    .qr-panel {
+      background: var(--card-bg);
+      color: var(--text-dark);
+      border-radius: var(--radius-xl);
+      padding: 26px 22px;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      justify-content: space-between;
+    }
+
+    .qr-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #EAF2F9;
+      color: #24496E;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 999px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .qr-title {
+      font-size: 19px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .qr-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    .qr-wrapper {
+      background: white;
+      padding: 12px;
+      border-radius: var(--radius-lg);
+      border: 1px solid #DFE7F0;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #qrCanvas {
+      display: block;
+      width: 184px;
+      height: 184px;
+    }
+
+    .room-badge {
+      font-size: 13px;
+      font-weight: 700;
+      color: #17283A;
+      margin-bottom: 8px;
+    }
+
+    .room-badge span {
+      background: #EAF1F8;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-family: ui-monospace, Menlo, monospace;
+      color: #0A84FF;
+    }
+
+    .link-preview-box {
+      width: 100%;
+      background: #F3F7FA;
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      font-size: 11px;
+      color: #486178;
+      word-break: break-all;
+      margin-bottom: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      max-height: 48px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Facilitator Bottom Bar */
+    .presenter-footer {
+      margin-top: 36px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+      background: rgba(14, 25, 38, 0.72);
+      backdrop-filter: blur(18px);
+      padding: 10px 22px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      font-size: 13px;
+    }
+
+    /* ========================================================
+       2. MOBILE PARTICIPANT VOTING VIEW (Opened via Phone)
+       ======================================================== */
+    #voterView {
+      width: 100%;
+      max-width: 500px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 8px;
+    }
+
+    .voter-header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .voter-badge {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.6px;
+      color: #A3CDF2;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .voter-question {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.35;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.25);
+    }
+
+    .voter-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+      margin-bottom: 24px;
+    }
+
+    .voter-card {
+      background: var(--card-bg);
+      color: var(--text-dark);
+      border-radius: var(--radius-lg);
+      padding: 16px 18px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      border: 3px solid transparent;
+      transition: all 0.22s ease;
+      position: relative;
+    }
+
+    .voter-card:active {
+      transform: scale(0.98);
+    }
+
+    .voter-card.selected {
+      border-color: var(--color-swimmer);
+      box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.25), 0 10px 28px rgba(0,0,0,0.25);
+    }
+    .voter-card[data-type="spotter"].selected {
+      border-color: var(--color-spotter);
+      box-shadow: 0 0 0 4px rgba(255, 159, 10, 0.25), 0 10px 28px rgba(0,0,0,0.25);
+    }
+    .voter-card[data-type="holder"].selected {
+      border-color: var(--color-holder);
+      box-shadow: 0 0 0 4px rgba(48, 209, 88, 0.25), 0 10px 28px rgba(0,0,0,0.25);
+    }
+
+    .voter-avatar {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: #E2ECF5;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .voter-info {
+      flex: 1;
+    }
+
+    .voter-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #172433;
+      margin-bottom: 4px;
+    }
+
+    .voter-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+
+    .radio-circle {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 2px solid #CBD7E3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+    }
+
+    .voter-card.selected .radio-circle {
+      border-color: var(--color-swimmer);
+      background: var(--color-swimmer);
+    }
+    .voter-card[data-type="spotter"].selected .radio-circle {
+      border-color: var(--color-spotter);
+      background: var(--color-spotter);
+    }
+    .voter-card[data-type="holder"].selected .radio-circle {
+      border-color: var(--color-holder);
+      background: var(--color-holder);
+    }
+
+    .radio-circle svg {
+      width: 14px;
+      height: 14px;
+      color: white;
+      opacity: 0;
+    }
+
+    .voter-card.selected .radio-circle svg {
+      opacity: 1;
+    }
+
+    .btn-submit-vote {
+      width: 100%;
+      padding: 16px;
+      font-size: 18px;
+      font-weight: 700;
+      border-radius: 999px;
+      border: none;
+      background: #FFFFFF;
+      color: #1C334A;
+      cursor: pointer;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+      transition: all 0.25s ease;
+    }
+
+    .btn-submit-vote:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    /* Success Card */
+    .success-card {
+      display: none;
+      background: rgba(255, 255, 255, 0.96);
+      color: var(--text-dark);
+      border-radius: var(--radius-xl);
+      padding: 40px 24px;
+      text-align: center;
+      box-shadow: var(--shadow-card);
+      width: 100%;
+      animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    @keyframes popIn {
+      from { opacity: 0; transform: scale(0.92); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .success-icon-badge {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: #EAF8EE;
+      color: #30D158;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 18px;
+    }
+
+    .success-card h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .success-card p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(120px);
+      background: #111A24;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.2);
+      transition: transform 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      z-index: 1000;
+    }
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ========================================================
+       1. PRESENTER DISPLAY VIEW
+       ======================================================== -->
+  <div id="presenterView">
+    
+    <!-- Top Header -->
+    <div class="presenter-header">
+      <div class="live-status-pill">
+        <div class="pulse-dot"></div>
+        <span id="syncStatusLabel">Cloud Live Active</span>
+        <span style="opacity: 0.35;">|</span>
+        <span id="totalVotesText">0 Responses</span>
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-glass" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+      </div>
+    </div>
+
+    <!-- Question Title -->
+    <div class="hero-section">
+      <div class="category-tag">Leadership & Mindset Activity</div>
+      <h1 class="poll-question">Which types mostly describe your tendency in reaction to a critical change?</h1>
+    </div>
+
+    <!-- Main Grid -->
+    <div class="presenter-content">
+      
+      <!-- 3 Archetype Cards -->
+      <div class="cards-row">
+        
+        <!-- Speed Swimmer -->
+        <div class="archetype-card" id="card-swimmer">
+          <div class="avatar-bubble">
+            <svg class="avatar-svg" viewBox="0 0 200 200" fill="none">
+              <defs>
+                <linearGradient id="gSwimmer" x1="100" y1="120" x2="100" y2="200" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#95B5CE" />
+                  <stop offset="1" stop-color="#7B9FB9" />
+                </linearGradient>
+              </defs>
+              <circle cx="100" cy="100" r="94" fill="#DDE9F2" />
+              <path d="M 6 122 C 30 118, 60 125, 100 121 C 140 117, 170 124, 194 122 L 194 195 A 94 94 0 0 1 6 195 Z" fill="url(#gSwimmer)" />
+              <circle cx="100" cy="98" r="19" fill="#4B667C" />
+              <path d="M 82 122 C 82 110 118 110 118 122" fill="#4B667C" />
+              <path d="M 85 116 L 56 94" stroke="#4B667C" stroke-width="9" stroke-linecap="round" />
+              <path d="M 115 116 L 144 94" stroke="#4B667C" stroke-width="9" stroke-linecap="round" />
+              <circle cx="48" cy="86" r="3" fill="#FFFFFF" opacity="0.9"/>
+              <circle cx="152" cy="86" r="3" fill="#FFFFFF" opacity="0.9"/>
+            </svg>
+          </div>
+          <h3 class="archetype-title">Speed Swimmer</h3>
+          <p class="archetype-desc">Takes immediate agile action, moves swiftly through turbulence, and focuses on quick forward momentum.</p>
+          <div class="poll-stats">
+            <div class="stats-numbers">
+              <span class="stat-pct" id="pct-swimmer">0%</span>
+              <span class="stat-count" id="count-swimmer">0 votes</span>
+            </div>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill fill-swimmer" id="bar-swimmer"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Shark Spotter -->
+        <div class="archetype-card" id="card-spotter">
+          <div class="avatar-bubble">
+            <svg class="avatar-svg" viewBox="0 0 200 200" fill="none">
+              <defs>
+                <linearGradient id="gSpotter" x1="100" y1="124" x2="100" y2="200" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#95B5CE" />
+                  <stop offset="1" stop-color="#7B9FB9" />
+                </linearGradient>
+              </defs>
+              <circle cx="100" cy="100" r="94" fill="#DDE9F2" />
+              <path d="M 6 128 C 30 125, 60 130, 100 127 C 140 124, 170 129, 194 128 L 194 195 A 94 94 0 0 1 6 195 Z" fill="url(#gSpotter)" />
+              <circle cx="95" cy="79" r="16" fill="#4B667C" />
+              <path d="M 84 102 C 84 94 106 94 106 102 L 106 126 C 106 128 84 128 84 126 Z" fill="#4B667C" />
+              <rect x="86" y="126" width="7" height="26" rx="3.5" fill="#4B667C" />
+              <rect x="97" y="126" width="7" height="26" rx="3.5" fill="#4B667C" />
+              <circle cx="112" cy="68" r="3" fill="#FFFFFF" />
+              <circle cx="119" cy="62" r="4.5" fill="#FFFFFF" />
+              <ellipse cx="145" cy="46" rx="28" ry="18" fill="#FFFFFF" />
+              <g transform="translate(126, 36) scale(0.68)">
+                <path d="M 4 14 C 12 8, 28 6, 42 14 C 47 17, 52 14, 55 11 L 52 16 C 54 18, 55 20, 56 22 L 50 19 C 43 21, 28 23, 16 19 C 10 17, 7 15, 4 14 Z" fill="#4B667C" />
+                <path d="M 22 10 L 26 2 L 31 11 Z" fill="#4B667C" />
+                <path d="M 18 17 L 14 26 L 22 20 Z" fill="#4B667C" />
+                <path d="M 50 17 L 57 8 L 54 17 L 58 25 Z" fill="#4B667C" />
+              </g>
+            </svg>
+          </div>
+          <h3 class="archetype-title">Shark Spotter</h3>
+          <p class="archetype-desc">Scans the horizon for systemic risks, anticipates hidden obstacles, and stays vigilant to hazards.</p>
+          <div class="poll-stats">
+            <div class="stats-numbers">
+              <span class="stat-pct" id="pct-spotter">0%</span>
+              <span class="stat-count" id="count-spotter">0 votes</span>
+            </div>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill fill-spotter" id="bar-spotter"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Flagpole Holder -->
+        <div class="archetype-card" id="card-holder">
+          <div class="avatar-bubble">
+            <svg class="avatar-svg" viewBox="0 0 200 200" fill="none">
+              <defs>
+                <linearGradient id="gHolder" x1="100" y1="124" x2="100" y2="200" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#95B5CE" />
+                  <stop offset="1" stop-color="#7B9FB9" />
+                </linearGradient>
+              </defs>
+              <circle cx="100" cy="100" r="94" fill="#DDE9F2" />
+              <path d="M 6 126 C 30 124, 60 128, 100 125 C 140 122, 170 127, 194 126 L 194 195 A 94 94 0 0 1 6 195 Z" fill="url(#gHolder)" />
+              <line x1="56" y1="28" x2="56" y2="132" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round"/>
+              <circle cx="56" cy="27" r="4.5" fill="#FFFFFF" />
+              <path d="M 56 31 C 70 26, 92 36, 114 30 C 114 48, 114 62, 114 74 C 95 82, 74 68, 56 75 Z" fill="#FFFFFF" />
+              <circle cx="62" cy="98" r="15" fill="#4B667C" />
+              <path d="M 55 112 C 55 110 72 110 72 116 L 72 130 C 72 135 60 135 52 135 C 47 135 46 120 55 112 Z" fill="#4B667C" />
+              <path d="M 52 132 L 78 132 C 82 132 84 127 84 123 L 84 120" stroke="#4B667C" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <h3 class="archetype-title">Flagpole Holder</h3>
+          <p class="archetype-desc">Anchors the team to core values, provides stability amid uncertainty, and preserves trusted foundations.</p>
+          <div class="poll-stats">
+            <div class="stats-numbers">
+              <span class="stat-pct" id="pct-holder">0%</span>
+              <span class="stat-count" id="count-holder">0 votes</span>
+            </div>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill fill-holder" id="bar-holder"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- QR Code Side Panel -->
+      <div class="qr-panel">
+        <div>
+          <div class="qr-tag">📱 Scan with iPhone</div>
+          <h2 class="qr-title">Scan to Vote</h2>
+          <p class="qr-subtitle">Point your phone camera to cast your reaction live.</p>
+        </div>
+
+        <div class="qr-wrapper">
+          <canvas id="qrCanvas"></canvas>
+        </div>
+
+        <div style="width: 100%;">
+          <div class="room-badge">Session: <span id="roomCodeDisplay">...</span></div>
+          <div class="link-preview-box" id="linkDisplay">Detecting live URL...</div>
+          <button class="btn btn-glass" style="width: 100%; color: #172433; background: #E2ECF5;" onclick="copyVoterUrl()">📋 Copy Link</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Presenter Bottom Controls -->
+    <div class="presenter-footer">
+      <span>Facilitator Options:</span>
+      <button class="btn btn-glass" onclick="simulateTestVote()">+ Test Vote</button>
+      <button class="btn btn-glass" onclick="resetPoll()">Reset Poll</button>
+      <button class="btn btn-glass" onclick="openVoterInNewTab()">↗ Open Voter View</button>
+    </div>
+
+  </div>
+
+  <!-- ========================================================
+       2. MOBILE PARTICIPANT VOTING VIEW
+       ======================================================== -->
+  <div id="voterView" style="display: none;">
+    
+    <div class="voter-header">
+      <div class="voter-badge">Live Audience Polling</div>
+      <h1 class="voter-question">Which types mostly describe your tendency in reaction to a critical change?</h1>
+    </div>
+
+    <div class="voter-cards" id="voterCardsList">
+      
+      <!-- Option 1 -->
+      <div class="voter-card" data-type="swimmer" onclick="voterSelectOption('swimmer')">
+        <div class="voter-avatar">
+          <svg viewBox="0 0 200 200" width="100%" height="100%">
+            <circle cx="100" cy="100" r="94" fill="#DDE9F2" />
+            <path d="M 6 122 C 30 118, 60 125, 100 121 C 140 117, 170 124, 194 122 L 194 195 A 94 94 0 0 1 6 195 Z" fill="#88AEC9" />
+            <circle cx="100" cy="98" r="19" fill="#4B667C" />
+            <path d="M 85 116 L 56 94" stroke="#4B667C" stroke-width="9" stroke-linecap="round" />
+            <path d="M 115 116 L 144 94" stroke="#4B667C" stroke-width="9" stroke-linecap="round" />
+          </svg>
+        </div>
+        <div class="voter-info">
+          <div class="voter-title">Speed Swimmer</div>
+          <div class="voter-desc">Takes immediate action, moves swiftly, focuses on forward momentum.</div>
+        </div>
+        <div class="radio-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+      </div>
+
+      <!-- Option 2 -->
+      <div class="voter-card" data-type="spotter" onclick="voterSelectOption('spotter')">
+        <div class="voter-avatar">
+          <svg viewBox="0 0 200 200" width="100%" height="100%">
+            <circle cx="100" cy="100" r="94" fill="#DDE9F2" />
+            <circle cx="95" cy="79" r="16" fill="#4B667C" />
+            <path d="M 84 102 C 84 94 106 94 106 102 L 106 126 C 106 128 84 128 84 126 Z" fill="#4B667C" />
+            <ellipse cx="145" cy="46" rx="28" ry="18" fill="#FFFFFF" />
+            <g transform="translate(126, 36) scale(0.68)">
+              <path d="M 4 14 C 12 8, 28 6, 42 14 C 47 17, 52 14, 55 11 L 52 16 C 54 18, 55 20, 56 22 L 50 19 C 43 21, 28 23, 16 19 Z" fill="#4B667C" />
+            </g>
+          </svg>
+        </div>
+        <div class="voter-info">
+          <div class="voter-title">Shark Spotter</div>
+          <div class="voter-desc">Anticipates risks, scans horizon for danger, cautious and vigilant.</div>
+        </div>
+        <div class="radio-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+      </div>
+
+      <!-- Option 3 -->
+      <div class="voter-card" data-type="holder" onclick="voterSelectOption('holder')">
+        <div class="voter-avatar">
+          <svg viewBox="0 0 200 200" width="100%" height="100%">
+            <circle cx="100" cy="100" r="94" fill="#DDE9F2" />
+            <line x1="56" y1="28" x2="56" y2="132" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round"/>
+            <path d="M 56 31 C 70 26, 92 36, 114 30 C 114 48, 114 62, 114 74 C 95 82, 74 68, 56 75 Z" fill="#FFFFFF" />
+            <circle cx="62" cy="98" r="15" fill="#4B667C" />
+            <path d="M 55 112 C 55 110 72 110 72 116 L 72 130 C 72 135 60 135 52 135 Z" fill="#4B667C" />
+          </svg>
+        </div>
+        <div class="voter-info">
+          <div class="voter-title">Flagpole Holder</div>
+          <div class="voter-desc">Anchors to core values, stands ground, seeks stability and certainty.</div>
+        </div>
+        <div class="radio-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+      </div>
+
+    </div>
+
+    <button class="btn-submit-vote" id="btnCastVote" onclick="submitVoterChoice()" disabled>
+      Select an Archetype
+    </button>
+
+    <!-- Success Confirmation -->
+    <div class="success-card" id="successCard">
+      <div class="success-icon-badge">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      </div>
+      <h2>Vote Recorded!</h2>
+      <p>
+        You selected <strong id="votedTypeName" style="color: #0A84FF;"></strong>.<br>
+        Check the presentation screen to see the live team profile update!
+      </p>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast">Copied to clipboard!</div>
+
+  <!-- Realtime Engine & GitHub Pages Router -->
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const isVoter = urlParams.get('role') === 'voter';
+    
+    // Auto-detect or generate room
+    let room = urlParams.get('room');
+    if (!room) {
+      room = 'APPLE-CHANGE-' + Math.floor(100 + Math.random() * 900);
+      // Update browser URL without reloading so presenter can refresh cleanly
+      if (!isVoter) {
+        const newUrl = window.location.pathname + '?room=' + room;
+        window.history.replaceState({ path: newUrl }, '', newUrl);
+      }
+    }
+
+    const appState = {
+      room: room,
+      role: isVoter ? 'voter' : 'presenter',
+      selectedVote: null,
+      hasVoted: false,
+      votes: { swimmer: 0, spotter: 0, holder: 0 },
+      mqttClient: null,
+      localChannel: null
+    };
+
+    // Public SSL/WSS MQTT Broker (HTTPS compliant for GitHub Pages)
+    const WSS_BROKER = "wss://broker.emqx.io:8084/mqtt";
+    const TOPIC_VOTES = `apple-change-poll/${appState.room}/votes`;
+    const TOPIC_RESET = `apple-change-poll/${appState.room}/reset`;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (appState.role === 'voter') {
+        document.getElementById('presenterView').style.display = 'none';
+        document.getElementById('voterView').style.display = 'flex';
+      } else {
+        document.getElementById('presenterView').style.display = 'flex';
+        document.getElementById('voterView').style.display = 'none';
+        document.getElementById('roomCodeDisplay').innerText = appState.room;
+        renderQrCode();
+      }
+
+      initNetworkSync();
+    });
+
+    function initNetworkSync() {
+      // Local browser sync fallback
+      if (window.BroadcastChannel) {
+        appState.localChannel = new BroadcastChannel('poll_room_' + appState.room);
+        appState.localChannel.onmessage = (e) => handleNetworkMessage(e.data);
+      }
+
+      // Secure WebSocket connection
+      try {
+        const clientId = 'poll_' + Math.random().toString(16).substring(2, 9);
+        appState.mqttClient = mqtt.connect(WSS_BROKER, {
+          clientId: clientId,
+          clean: true,
+          connectTimeout: 5000
+        });
+
+        appState.mqttClient.on('connect', () => {
+          console.log('[Sync] Connected to Cloud WSS Broker');
+          const syncLabel = document.getElementById('syncStatusLabel');
+          if (syncLabel) syncLabel.innerText = "Cloud Sync Active";
+          appState.mqttClient.subscribe(TOPIC_VOTES);
+          appState.mqttClient.subscribe(TOPIC_RESET);
+        });
+
+        appState.mqttClient.on('message', (topic, message) => {
+          try {
+            const data = JSON.parse(message.toString());
+            handleNetworkMessage(data);
+          } catch(e) {
+            console.error("Payload error", e);
+          }
+        });
+
+        appState.mqttClient.on('offline', () => {
+          const syncLabel = document.getElementById('syncStatusLabel');
+          if (syncLabel) syncLabel.innerText = "Local Fallback Sync";
+        });
+      } catch (err) {
+        console.warn('WSS connection warning:', err);
+      }
+    }
+
+    function handleNetworkMessage(data) {
+      if (data.type === 'vote') {
+        recordIncomingVote(data.choice, false);
+      } else if (data.type === 'reset') {
+        appState.votes = { swimmer: 0, spotter: 0, holder: 0 };
+        renderDashboard();
+      }
+    }
+
+    function broadcastEvent(data) {
+      if (appState.mqttClient && appState.mqttClient.connected) {
+        const topic = data.type === 'reset' ? TOPIC_RESET : TOPIC_VOTES;
+        appState.mqttClient.publish(topic, JSON.stringify(data));
+      }
+      if (appState.localChannel) {
+        appState.localChannel.postMessage(data);
+      }
+    }
+
+    function recordIncomingVote(type, shouldBroadcast = true) {
+      if (!appState.votes.hasOwnProperty(type)) return;
+      appState.votes[type]++;
+
+      const card = document.getElementById(`card-${type}`);
+      if (card) {
+        card.classList.remove('highlight-flash');
+        void card.offsetWidth;
+        card.classList.add('highlight-flash');
+      }
+
+      renderDashboard();
+
+      if (shouldBroadcast) {
+        broadcastEvent({ type: 'vote', choice: type });
+      }
+    }
+
+    function renderDashboard() {
+      const total = appState.votes.swimmer + appState.votes.spotter + appState.votes.holder;
+      const totalEl = document.getElementById('totalVotesText');
+      if (totalEl) totalEl.innerText = `${total} ${total === 1 ? 'Response' : 'Responses'}`;
+
+      ['swimmer', 'spotter', 'holder'].forEach(t => {
+        const count = appState.votes[t];
+        const pct = total === 0 ? 0 : Math.round((count / total) * 100);
+
+        const pctEl = document.getElementById(`pct-${t}`);
+        const countEl = document.getElementById(`count-${t}`);
+        const barEl = document.getElementById(`bar-${t}`);
+
+        if (pctEl) pctEl.innerText = `${pct}%`;
+        if (countEl) countEl.innerText = `${count} ${count === 1 ? 'vote' : 'votes'}`;
+        if (barEl) barEl.style.width = `${pct}%`;
+      });
+    }
+
+    function getVoterUrl() {
+      // In GitHub Pages, window.location.href automatically matches:
+      // https://<user>.github.io/<repo>/?room=XYZ&role=voter
+      const base = window.location.origin + window.location.pathname;
+      return `${base}?room=${encodeURIComponent(appState.room)}&role=voter`;
+    }
+
+    function renderQrCode() {
+      const voterUrl = getVoterUrl();
+      const canvas = document.getElementById('qrCanvas');
+      const linkDisplay = document.getElementById('linkDisplay');
+
+      if (linkDisplay) linkDisplay.innerText = voterUrl;
+
+      new QRious({
+        element: canvas,
+        value: voterUrl,
+        size: 184,
+        level: 'M',
+        foreground: '#111E2E',
+        background: '#FFFFFF'
+      });
+    }
+
+    function copyVoterUrl() {
+      navigator.clipboard.writeText(getVoterUrl()).then(() => {
+        showToast("Voter link copied to clipboard!");
+      });
+    }
+
+    function openVoterInNewTab() {
+      window.open(getVoterUrl(), '_blank');
+    }
+
+    function simulateTestVote() {
+      const archetypes = ['swimmer', 'spotter', 'holder'];
+      const chosen = archetypes[Math.floor(Math.random() * archetypes.length)];
+      recordIncomingVote(chosen, true);
+      showToast(`+1 Vote for ${chosen}`);
+    }
+
+    function resetPoll() {
+      if (confirm("Reset all responses to zero?")) {
+        appState.votes = { swimmer: 0, spotter: 0, holder: 0 };
+        renderDashboard();
+        broadcastEvent({ type: 'reset' });
+        showToast("Poll results reset.");
+      }
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+      } else {
+        document.exitFullscreen();
+      }
+    }
+
+    // Voter Actions
+    function voterSelectOption(type) {
+      if (appState.hasVoted) return;
+      appState.selectedVote = type;
+
+      document.querySelectorAll('.voter-card').forEach(c => {
+        if (c.dataset.type === type) {
+          c.classList.add('selected');
+        } else {
+          c.classList.remove('selected');
+        }
+      });
+
+      const btn = document.getElementById('btnCastVote');
+      btn.removeAttribute('disabled');
+      const titles = { swimmer: 'Speed Swimmer', spotter: 'Shark Spotter', holder: 'Flagpole Holder' };
+      btn.innerText = `Submit: ${titles[type]}`;
+    }
+
+    function submitVoterChoice() {
+      if (!appState.selectedVote || appState.hasVoted) return;
+
+      const choice = appState.selectedVote;
+      appState.hasVoted = true;
+
+      broadcastEvent({ type: 'vote', choice: choice });
+
+      document.getElementById('voterCardsList').style.display = 'none';
+      document.getElementById('btnCastVote').style.display = 'none';
+
+      const titles = { swimmer: 'Speed Swimmer', spotter: 'Shark Spotter', holder: 'Flagpole Holder' };
+      document.getElementById('votedTypeName').innerText = titles[choice];
+      document.getElementById('successCard').style.display = 'block';
+
+      if (navigator.vibrate) navigator.vibrate(50);
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+  </script>
+</body>
+</html>
